@@ -1,7 +1,6 @@
 use log::{error, info};
 
 mod server;
-mod service;
 mod core {
     pub mod resp;
 }
