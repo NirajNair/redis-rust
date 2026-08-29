@@ -2,6 +2,9 @@ use log::{error, info};
 
 mod server;
 mod service;
+mod core {
+    pub mod resp;
+}
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
