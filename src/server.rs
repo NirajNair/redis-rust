@@ -1,18 +1,20 @@
-use std::net::TcpListener;
 use std::{
-    io::{self, Read, Write},
-    net::TcpStream,
+    io::{self, Error, Read, Write},
+    net::{TcpListener, TcpStream},
 };
 
 use log::{error, info};
 
-use crate::service;
+use crate::core::cmd::RedisCmd;
+use crate::core::eval;
+use crate::core::resp::{self};
 
 pub struct Server {
     addr: String,
     conn_count: u32,
     listener: TcpListener,
 }
+
 impl Server {
     pub fn new(addr: String) -> std::io::Result<Self> {
         let listener = TcpListener::bind(&addr)?;
@@ -37,7 +39,7 @@ impl Server {
                         "Client connected on {}, concurrent clients: {}",
                         peer_addr, self.conn_count,
                     );
-                    service::handle_client_conn(stream, &peer_addr);
+                    handle_client_conn(stream, &peer_addr);
                     self.conn_count -= 1;
                 }
                 Err(e) => error!("Failed to establish connection: {}", e),
@@ -48,31 +50,31 @@ impl Server {
 
 pub fn handle_client_conn(mut stream: TcpStream, peer_addr: &str) {
     loop {
-        let Some(cmd) = read_command(&mut stream, peer_addr) else {
+        let Ok(Some(redis_cmd)) = read_command(&mut stream, peer_addr) else {
             break;
         };
-        if respond(&mut stream, &cmd, peer_addr).is_err() {
+        if respond(&mut stream, &redis_cmd).is_err() {
             break;
         }
     }
-    println!("Connection stopped for {}", peer_addr);
+    info!("Connection stopped for {}", peer_addr);
 }
 
-fn read_command(stream: &mut TcpStream, peer_addr: &str) -> Option<Vec<u8>> {
+fn read_command(stream: &mut TcpStream, peer_addr: &str) -> Result<Option<RedisCmd>, Error> {
     let mut buffer = [0; 1024];
     loop {
         match stream.read(&mut buffer) {
             Ok(0) => {
                 info!("Client {} closed their connection", peer_addr);
-                return None;
+                return Ok(None);
             }
             Ok(n) => {
-                info!(
-                    "Client {} sent: {}",
-                    peer_addr,
-                    String::from_utf8_lossy(&buffer[0..n])
-                );
-                return Some(buffer[0..n].to_vec());
+                let mut tokens = resp::decode_array_string(&buffer[0..n])
+                    .map_err(|e| Error::new(io::ErrorKind::InvalidData, format!("{e:?}")))?;
+
+                let cmd = tokens.remove(0);
+
+                return Ok(Some(RedisCmd { cmd, args: tokens }));
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => {
@@ -82,16 +84,18 @@ fn read_command(stream: &mut TcpStream, peer_addr: &str) -> Option<Vec<u8>> {
                     }
                     _ => error!("Read error from client {}: {}", peer_addr, e),
                 }
-                return None;
+                return Err(e);
             }
         }
     }
 }
 
-fn respond(stream: &mut TcpStream, data: &[u8], peer_addr: &str) -> io::Result<()> {
-    if let Err(e) = stream.write_all(data) {
-        error!("Error writing to client {}: {}", peer_addr, e);
-        return Err(e);
+fn respond(stream: &mut TcpStream, cmd: &RedisCmd) -> Result<(), Error> {
+    if let Err(e) = eval::eval_and_respond(stream, cmd) {
+        let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, format!("{err:?}")))?;
+
+        stream.write_all(&bytes)?;
     }
     Ok(())
 }

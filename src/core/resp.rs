@@ -15,6 +15,30 @@ pub enum RespError {
     Parse(String),
 }
 
+pub fn encode(data: RespValue) -> Result<Vec<u8>, RespError> {
+    return match data {
+        RespValue::SimpleString(s) => return Ok(format!("+{s}\r\n").into_bytes()),
+        RespValue::BulkString(s) => return Ok(format!("${}\r\n{}\r\n", s.len(), s).into_bytes()),
+        RespValue::Error(s) => return Ok(format!("-{s}\r\n").into_bytes()),
+        _ => Err(RespError::Parse("RESP encoding error".to_string())),
+    };
+}
+
+pub fn decode_array_string(data: &[u8]) -> Result<Vec<String>, RespError> {
+    let RespValue::Array(items) = decode(data)? else {
+        return Err(RespError::Parse("expected array of strings".to_string()));
+    };
+    items
+        .into_iter()
+        .map(|v| match v {
+            RespValue::SimpleString(s) | RespValue::BulkString(s) => Ok(s),
+            other => Err(RespError::Parse(format!(
+                "array element is not a string: {other:?}"
+            ))),
+        })
+        .collect()
+}
+
 pub fn decode(data: &[u8]) -> Result<RespValue, RespError> {
     if data.is_empty() {
         return Err(RespError::Empty);
