@@ -1,136 +1,146 @@
 use std::{
     collections::HashMap,
-    io::{Error, ErrorKind, Read, Result},
-    net::{TcpListener, TcpStream},
-    os::fd::{AsRawFd, RawFd},
+    io::{Error, ErrorKind, Read, Result, Write},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
-use kqueue::{EventFilter, FilterFlag, Ident, Watcher};
 use log::{error, info};
-
-use crate::{
-    core::{cmd::RedisCmd, resp},
-    service,
+use mio::{
+    Events, Interest, Poll, Token,
+    net::{TcpListener, TcpStream},
 };
+
+use crate::core::{cmd::RedisCmd, eval, resp};
+
+const SERVER: Token = Token(0);
 
 pub struct AsyncServer {
-    addr: String,
+    addr: SocketAddr,
     conn_count: u32,
-    watcher: Watcher,
+    next_client_token: usize,
+    poller: Poll,
     listener: TcpListener,
-    clients: HashMap<RawFd, Client>,
+    clients: HashMap<Token, Client>,
 }
 
 pub struct Client {
-    addr: String,
+    addr: SocketAddr,
     stream: TcpStream,
 }
 
 impl AsyncServer {
-    pub fn new(addr: String) -> Result<Self> {
-        let listener = TcpListener::bind(&addr)?;
-        let watcher = Watcher::new()?;
+    pub fn new(port: u16) -> Result<Self> {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
+        let listener = TcpListener::bind(addr)?;
+        let poller = Poll::new()?;
+
         Ok(AsyncServer {
             addr,
             conn_count: 0,
+            next_client_token: 1,
             listener,
-            watcher,
+            poller,
             clients: HashMap::new(),
         })
     }
 
     pub fn start(&mut self) -> Result<()> {
         info!("Server started at address: {}", self.addr);
-        self.listener.set_nonblocking(true)?;
-        let server_fd: RawFd = self.listener.as_raw_fd();
 
-        self.watcher
-            .add_fd(server_fd, EventFilter::EVFILT_READ, FilterFlag::empty())?;
+        let mut events = Events::with_capacity(128);
 
-        self.watcher.watch()?;
+        self.poller
+            .registry()
+            .register(&mut self.listener, SERVER, Interest::READABLE)?;
 
         loop {
-            if let Some(event) = self.watcher.poll_forever(None) {
-                let fd = match event.ident {
-                    Ident::Fd(fd) => fd,
-                    _ => continue,
-                };
+            self.poller.poll(&mut events, None)?;
 
-                if fd == server_fd {
-                    // Accept the incoming client and register the socket with the watcher
-                    for stream_result in self.listener.incoming() {
-                        match stream_result {
-                            Ok(stream) => {
-                                stream.set_nonblocking(true)?;
-                                let client_fd = stream.as_raw_fd();
-
-                                self.watcher.add_fd(
-                                    client_fd,
-                                    EventFilter::EVFILT_READ,
-                                    FilterFlag::empty(),
-                                )?;
-                                // we need to re-register after adding a new fd.
-                                self.watcher.watch()?;
-
-                                self.clients.insert(
-                                    client_fd,
-                                    Client {
-                                        addr: stream.peer_addr().map_or_else(
-                                            |_| "unknown".to_string(),
-                                            |addr| addr.to_string(),
-                                        ),
-                                        stream,
-                                    },
-                                );
-                                self.conn_count += 1;
-                            }
-                            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                            Err(e) => error!("Failed to establish connection: {}", e),
-                        }
-                    }
-                } else if let Some(client) = self.clients.get_mut(&fd) {
-                    // Accept the incoming commands from client FD
-                    let mut buffer = [0; 1024];
-                    match client.stream.read(&mut buffer) {
-                        Ok(0) => {
-                            info!("Client {} closed their connection", client.addr);
-                            self.remove_client(&fd)?;
-                            continue;
-                        }
-                        Ok(n) => {
-                            let mut tokens =
-                                resp::decode_array_string(&buffer[..n]).map_err(|e| {
-                                    Error::new(ErrorKind::InvalidData, format!("{e:?}"))
-                                })?;
-
-                            let cmd = tokens.remove(0);
-
-                            service::respond(&mut client.stream, &RedisCmd { cmd, args: tokens })?;
-                        }
-                        Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                        Err(e) => {
-                            match e.kind() {
-                                ErrorKind::ConnectionReset => {
-                                    info!("Client {} connection reset", client.addr);
-                                }
-                                _ => error!("Read error from client {}: {}", client.addr, e),
-                            }
-
-                            self.remove_client(&fd)?;
-                            continue;
-                        }
+            for event in events.iter() {
+                if event.is_readable() {
+                    if event.token() == SERVER {
+                        self.accept_clients()?;
+                    } else if self.clients.contains_key(&event.token()) {
+                        self.handle_client(&event.token())?;
                     }
                 }
             }
         }
     }
 
-    pub fn remove_client(&mut self, client_fd: &RawFd) -> Result<()> {
-        self.watcher
-            .remove_fd(*client_fd, EventFilter::EVFILT_READ)?;
+    fn accept_clients(&mut self) -> Result<()> {
+        loop {
+            match self.listener.accept() {
+                Ok((mut stream, addr)) => {
+                    let client_token = Token(self.next_client_token);
+                    self.next_client_token += 1;
 
-        self.clients.remove(client_fd);
-        self.conn_count -= 1;
+                    self.poller.registry().register(
+                        &mut stream,
+                        client_token,
+                        Interest::READABLE,
+                    )?;
+
+                    self.clients.insert(client_token, Client { addr, stream });
+                    self.conn_count += 1;
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => error!("Failed to establish connection: {}", e),
+            }
+        }
         Ok(())
     }
+
+    fn handle_client(&mut self, token: &Token) -> Result<()> {
+        let mut buffer = [0; 1024];
+        let Some(client) = self.clients.get_mut(token) else {
+            return Err(Error::new(ErrorKind::NotFound, "Client not found"));
+        };
+        match client.stream.read(&mut buffer) {
+            Ok(0) => self.remove_client(token),
+            Ok(n) => {
+                let mut tokens = resp::decode_array_string(&buffer[..n])
+                    .map_err(|e| Error::new(ErrorKind::InvalidData, format!("{e:?}")))?;
+
+                let cmd = tokens.remove(0);
+
+                respond(&mut client.stream, &RedisCmd { cmd, args: tokens })
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => Ok(()),
+            Err(e) => {
+                match e.kind() {
+                    ErrorKind::ConnectionReset => {
+                        info!("Client {} connection reset", client.addr);
+                    }
+                    _ => error!("Read error from client {}: {}", client.addr, e),
+                }
+
+                self.remove_client(token)
+            }
+        }
+    }
+
+    fn remove_client(&mut self, token: &Token) -> Result<()> {
+        let Some(mut client) = self.clients.remove(token) else {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                "Error client not found for cleanup",
+            ));
+        };
+
+        self.poller.registry().deregister(&mut client.stream)?;
+        self.conn_count -= 1;
+
+        Ok(())
+    }
+}
+
+fn respond<W: Write>(stream: &mut W, cmd: &RedisCmd) -> Result<()> {
+    if let Err(e) = eval::eval_and_respond(stream, cmd) {
+        let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
+            .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
+
+        stream.write_all(&bytes)?;
+    }
+    Ok(())
 }

@@ -11,11 +11,11 @@ mod core {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let addr = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.1:7379".to_string());
-
     // Sync implementation
+    // let addr = std::env::args()
+    //     .nth(1)
+    //     .unwrap_or_else(|| "127.0.1:7379".to_string());
+    //
     // let mut srv = match server::Server::new(addr) {
     //     Ok(server) => server,
     //     Err(e) => {
@@ -28,7 +28,12 @@ fn main() {
     // srv.start();
 
     // Async implementation
-    let mut srv = match async_server::AsyncServer::new(addr) {
+    let port: u16 = std::env::args()
+        .nth(1)
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| 7379);
+
+    let mut srv = match async_server::AsyncServer::new(port) {
         Ok(server) => server,
         Err(e) => {
             error!("Failed to create server: {}", e);

@@ -6,7 +6,7 @@ use crate::core::{
     resp,
 };
 
-pub fn eval_and_respond(stream: &TcpStream, cmd: &RedisCmd) -> Result<(), Error> {
+pub fn eval_and_respond<W: Write>(stream: &mut W, cmd: &RedisCmd) -> Result<(), Error> {
     match RedisCmdType::parse(&cmd.cmd) {
         Some(RedisCmdType::Ping) => eval_ping(stream, &cmd.args),
         None => Err(Error::new(
@@ -16,7 +16,7 @@ pub fn eval_and_respond(stream: &TcpStream, cmd: &RedisCmd) -> Result<(), Error>
     }
 }
 
-fn eval_ping(mut stream: &TcpStream, args: &Vec<String>) -> Result<(), Error> {
+fn eval_ping<W: Write>(stream: &mut W, args: &Vec<String>) -> Result<(), Error> {
     if args.len() > 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
