@@ -11,17 +11,16 @@ pub enum RespValue {
 pub enum RespError {
     Empty,
     InvalidType(u8),
-    Incomplete,
     Parse(String),
 }
 
 pub fn encode(data: RespValue) -> Result<Vec<u8>, RespError> {
-    return match data {
-        RespValue::SimpleString(s) => return Ok(format!("+{s}\r\n").into_bytes()),
-        RespValue::BulkString(s) => return Ok(format!("${}\r\n{}\r\n", s.len(), s).into_bytes()),
-        RespValue::Error(s) => return Ok(format!("-{s}\r\n").into_bytes()),
+    match data {
+        RespValue::SimpleString(s) => Ok(format!("+{s}\r\n").into_bytes()),
+        RespValue::BulkString(s) => Ok(format!("${}\r\n{}\r\n", s.len(), s).into_bytes()),
+        RespValue::Error(s) => Ok(format!("-{s}\r\n").into_bytes()),
         _ => Err(RespError::Parse("RESP encoding error".to_string())),
-    };
+    }
 }
 
 pub fn decode_array_string(data: &[u8]) -> Result<Vec<String>, RespError> {
