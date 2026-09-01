@@ -1,8 +1,7 @@
-use log::{error, info};
+use log::error;
 
 mod async_server;
 mod server;
-mod service;
 mod core {
     pub mod cmd;
     pub mod eval;
