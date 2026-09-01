@@ -10,7 +10,7 @@ use mio::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::core::{cmd::RedisCmd, eval, resp};
+use crate::core::{cmd::RedisCmd, eval, resp, store::Store};
 
 const SERVER: Token = Token(0);
 
@@ -21,6 +21,7 @@ pub struct AsyncServer {
     poller: Poll,
     listener: TcpListener,
     clients: HashMap<Token, Client>,
+    store: Store,
 }
 
 pub struct Client {
@@ -41,6 +42,7 @@ impl AsyncServer {
             listener,
             poller,
             clients: HashMap::new(),
+            store: Store::new(),
         })
     }
 
@@ -104,7 +106,11 @@ impl AsyncServer {
 
                 let cmd = tokens.remove(0);
 
-                respond(&mut client.stream, &RedisCmd { cmd, args: tokens })
+                respond(
+                    &mut client.stream,
+                    &RedisCmd { cmd, args: tokens },
+                    &mut self.store,
+                )
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => Ok(()),
             Err(e) => {
@@ -135,8 +141,8 @@ impl AsyncServer {
     }
 }
 
-fn respond<W: Write>(stream: &mut W, cmd: &RedisCmd) -> Result<()> {
-    if let Err(e) = eval::eval_and_respond(stream, cmd) {
+fn respond<W: Write>(stream: &mut W, cmd: &RedisCmd, store: &mut Store) -> Result<()> {
+    if let Err(e) = eval::eval_and_respond(stream, cmd, store) {
         let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
             .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
 

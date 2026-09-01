@@ -5,14 +5,14 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::core::{cmd::RedisCmd, eval, resp};
+use crate::core::{cmd::RedisCmd, eval, resp, store::Store};
 
 pub struct Server {
     addr: String,
     conn_count: u32,
     listener: TcpListener,
+    store: Store,
 }
-
 impl Server {
     pub fn new(addr: String) -> std::io::Result<Self> {
         let listener = TcpListener::bind(&addr)?;
@@ -20,6 +20,7 @@ impl Server {
             addr,
             conn_count: 0,
             listener,
+            store: Store::new(),
         })
     }
 
@@ -41,7 +42,7 @@ impl Server {
                         let Ok(Some(redis_cmd)) = self.read_command(&mut stream, &peer_addr) else {
                             break;
                         };
-                        if self.respond(&mut stream, &redis_cmd).is_err() {
+                        if respond(&mut stream, &redis_cmd, &mut self.store).is_err() {
                             break;
                         }
                     }
@@ -87,14 +88,14 @@ impl Server {
             }
         }
     }
+}
 
-    fn respond(&self, stream: &mut TcpStream, cmd: &RedisCmd) -> Result<(), Error> {
-        if let Err(e) = eval::eval_and_respond(stream, cmd) {
-            let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
-                .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
+fn respond(stream: &mut TcpStream, cmd: &RedisCmd, store: &mut Store) -> Result<(), Error> {
+    if let Err(e) = eval::eval_and_respond(stream, cmd, store) {
+        let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
+            .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
 
-            stream.write_all(&bytes)?;
-        }
-        Ok(())
+        stream.write_all(&bytes)?;
     }
+    Ok(())
 }

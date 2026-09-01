@@ -14,10 +14,14 @@ pub enum RespError {
     Parse(String),
 }
 
+pub const RESP_OK: &[u8] = b"+OK\r\n";
+pub const RESP_NIL: &[u8] = b"$-1\r\n";
+
 pub fn encode(data: RespValue) -> Result<Vec<u8>, RespError> {
     match data {
         RespValue::SimpleString(s) => Ok(format!("+{s}\r\n").into_bytes()),
         RespValue::BulkString(s) => Ok(format!("${}\r\n{}\r\n", s.len(), s).into_bytes()),
+        RespValue::Integer(n) => Ok(format!(":{}\r\n", n).into_bytes()),
         RespValue::Error(s) => Ok(format!("-{s}\r\n").into_bytes()),
         _ => Err(RespError::Parse("RESP encoding error".to_string())),
     }
