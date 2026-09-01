@@ -23,7 +23,7 @@ pub fn encode(data: RespValue) -> Result<Vec<u8>, RespError> {
         RespValue::BulkString(s) => Ok(format!("${}\r\n{}\r\n", s.len(), s).into_bytes()),
         RespValue::Integer(n) => Ok(format!(":{}\r\n", n).into_bytes()),
         RespValue::Error(s) => Ok(format!("-{s}\r\n").into_bytes()),
-        _ => Err(RespError::Parse("RESP encoding error".to_string())),
+        _ => Ok(RESP_NIL.to_vec()),
     }
 }
 

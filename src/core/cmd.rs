@@ -8,6 +8,8 @@ pub enum RedisCmdType {
     Set,
     Get,
     Ttl,
+    Del,
+    Expire,
 }
 
 impl RedisCmdType {
@@ -17,6 +19,8 @@ impl RedisCmdType {
             "set" => Some(RedisCmdType::Set),
             "get" => Some(RedisCmdType::Get),
             "ttl" => Some(RedisCmdType::Ttl),
+            "del" => Some(RedisCmdType::Del),
+            "expire" => Some(RedisCmdType::Expire),
             _ => None,
         }
     }

@@ -9,12 +9,10 @@ pub struct Obj {
 
 impl Obj {
     pub fn new(val: String, duration_ms: Option<u128>) -> Self {
-        let expires_at = match duration_ms {
-            Some(d) => Some(utils::time::get_current_epoch_time() + d),
-            _ => None,
-        };
-
-        Obj { val, expires_at }
+        Obj {
+            val,
+            expires_at: duration_ms.map(|d| utils::time::get_current_epoch_time() + d),
+        }
     }
 }
 
@@ -33,7 +31,21 @@ impl Store {
         self.map.insert(key, obj);
     }
 
-    pub fn get(&self, key: String) -> Option<&Obj> {
-        self.map.get(&key)
+    pub fn get(&self, key: &String) -> Option<&Obj> {
+        self.map.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &String) -> Option<&mut Obj> {
+        self.map.get_mut(key)
+    }
+
+    pub fn delete(&mut self, key: &String) -> bool {
+        match self.map.get(key) {
+            Some(_) => {
+                self.map.remove(key);
+                true
+            }
+            None => false,
+        }
     }
 }

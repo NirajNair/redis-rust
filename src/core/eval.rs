@@ -19,9 +19,19 @@ pub fn eval_and_respond<W: Write>(
         Some(RedisCmdType::Set) => eval_set(stream, &cmd.args, store),
         Some(RedisCmdType::Get) => eval_get(stream, &cmd.args, store),
         Some(RedisCmdType::Ttl) => eval_ttl(stream, &cmd.args, store),
+        Some(RedisCmdType::Del) => eval_del(stream, &cmd.args, store),
+        Some(RedisCmdType::Expire) => eval_expire(stream, &cmd.args, store),
         None => Err(Error::new(
             ErrorKind::InvalidInput,
-            format!("ERR unknown command '{}'", cmd.cmd),
+            format!(
+                "ERR unknown command '{}', with args beginning with: {}",
+                cmd.cmd,
+                cmd.args
+                    .iter()
+                    .map(|a| format!("'{a}',"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
         )),
     }
 }
@@ -97,7 +107,7 @@ fn eval_get<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
         ));
     }
 
-    let key = args[0].clone();
+    let key = &args[0];
     let now = utils::time::get_current_epoch_time();
 
     let val = match store.get(key) {
@@ -130,7 +140,7 @@ fn eval_ttl<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
         ));
     }
 
-    let key = args[0].clone();
+    let key = &args[0];
     let now = utils::time::get_current_epoch_time();
 
     let ttl: i64 = match store.get(key) {
@@ -143,6 +153,65 @@ fn eval_ttl<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
     };
 
     let bytes = resp::encode(resp::RespValue::Integer(ttl))
+        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
+
+    stream.write_all(&bytes)
+}
+
+fn eval_del<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Result<(), Error> {
+    if args.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "ERR wrong number of arguments for 'del' command",
+        ));
+    }
+
+    let mut total_deleted_count = 0;
+    for arg in args {
+        if store.delete(arg) {
+            total_deleted_count += 1;
+        }
+    }
+
+    let bytes = resp::encode(resp::RespValue::Integer(total_deleted_count))
+        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
+
+    stream.write_all(&bytes)
+}
+
+fn eval_expire<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Result<(), Error> {
+    if args.len() <= 1 {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "ERR wrong number of arguments for 'expire' command",
+        ));
+    }
+
+    let key = &args[0];
+    let Some(obj) = store.get_mut(key) else {
+        let bytes = resp::encode(resp::RespValue::Integer(0))
+            .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
+
+        return stream.write_all(&bytes);
+    };
+
+    let duration_sec: i64 = args[1].parse().map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "ERR value is not an integer or out of range",
+        )
+    })?;
+
+    if duration_sec <= 0 {
+        let bytes = resp::encode(resp::RespValue::Integer(0))
+            .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
+
+        return stream.write_all(&bytes);
+    }
+
+    obj.expires_at = Some(utils::time::get_current_epoch_time() + ((duration_sec * 1000) as u128));
+
+    let bytes = resp::encode(resp::RespValue::Integer(1))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
     stream.write_all(&bytes)
