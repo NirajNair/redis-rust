@@ -5,7 +5,11 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::core::{cmd::RedisCmd, eval, resp, store::Store};
+use crate::core::{
+    cmd::{RedisCmd, RedisCmds},
+    eval, resp,
+    store::Store,
+};
 
 pub struct Server {
     addr: String,
@@ -59,7 +63,7 @@ impl Server {
         &self,
         stream: &mut TcpStream,
         peer_addr: &String,
-    ) -> Result<Option<RedisCmd>, Error> {
+    ) -> Result<Option<RedisCmds>, Error> {
         let mut buffer = [0; 1024];
         loop {
             match stream.read(&mut buffer) {
@@ -68,12 +72,18 @@ impl Server {
                     return Ok(None);
                 }
                 Ok(n) => {
-                    let mut tokens = resp::decode_array_string(&buffer[0..n])
+                    let vec_tokens = resp::decode_array_string(&buffer[0..n])
                         .map_err(|e| Error::new(ErrorKind::InvalidData, format!("{e:?}")))?;
 
-                    let cmd = tokens.remove(0);
+                    let cmds = vec_tokens
+                        .into_iter()
+                        .map(|mut tokens| {
+                            let cmd = tokens.remove(0);
+                            RedisCmd { cmd, args: tokens }
+                        })
+                        .collect();
 
-                    return Ok(Some(RedisCmd { cmd, args: tokens }));
+                    return Ok(Some(cmds));
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => {
@@ -90,8 +100,8 @@ impl Server {
     }
 }
 
-fn respond(stream: &mut TcpStream, cmd: &RedisCmd, store: &mut Store) -> Result<(), Error> {
-    if let Err(e) = eval::eval_and_respond(stream, cmd, store) {
+fn respond(stream: &mut TcpStream, cmds: &RedisCmds, store: &mut Store) -> Result<(), Error> {
+    if let Err(e) = eval::eval_and_respond(stream, cmds, store) {
         let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
             .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
 

@@ -3,6 +3,8 @@ pub struct RedisCmd {
     pub args: Vec<String>,
 }
 
+pub type RedisCmds = Vec<RedisCmd>;
+
 pub enum RedisCmdType {
     Ping,
     Set,

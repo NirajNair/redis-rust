@@ -15,7 +15,7 @@ use crate::{
     config::config,
     core::{
         cleanup::{self},
-        cmd::RedisCmd,
+        cmd::{RedisCmd, RedisCmds},
         eval, resp,
         store::Store,
     },
@@ -77,9 +77,13 @@ impl AsyncServer {
             for event in events.iter() {
                 if event.is_readable() {
                     if event.token() == SERVER {
-                        self.accept_clients()?;
+                        if let Err(e) = self.accept_clients() {
+                            error!("Error accepting client: {e}");
+                        }
                     } else if self.clients.contains_key(&event.token()) {
-                        self.handle_client(&event.token())?;
+                        if let Err(e) = self.handle_client(&event.token()) {
+                            error!("Client handler error: {e}");
+                        }
                     }
                 }
             }
@@ -118,16 +122,18 @@ impl AsyncServer {
         match client.stream.read(&mut buffer) {
             Ok(0) => self.remove_client(token),
             Ok(n) => {
-                let mut tokens = resp::decode_array_string(&buffer[..n])
+                let vec_tokens = resp::decode_array_string(&buffer[..n])
                     .map_err(|e| Error::new(ErrorKind::InvalidData, format!("{e:?}")))?;
 
-                let cmd = tokens.remove(0);
+                let cmds = vec_tokens
+                    .into_iter()
+                    .map(|mut tokens| {
+                        let cmd = tokens.remove(0);
+                        RedisCmd { cmd, args: tokens }
+                    })
+                    .collect();
 
-                respond(
-                    &mut client.stream,
-                    &RedisCmd { cmd, args: tokens },
-                    &mut self.store,
-                )
+                respond(&mut client.stream, &cmds, &mut self.store)
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => Ok(()),
             Err(e) => {
@@ -158,8 +164,8 @@ impl AsyncServer {
     }
 }
 
-fn respond<W: Write>(stream: &mut W, cmd: &RedisCmd, store: &mut Store) -> Result<()> {
-    if let Err(e) = eval::eval_and_respond(stream, cmd, store) {
+fn respond<W: Write>(stream: &mut W, cmds: &RedisCmds, store: &mut Store) -> Result<()> {
+    if let Err(e) = eval::eval_and_respond(stream, cmds, store) {
         let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
             .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
 

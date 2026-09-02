@@ -2,7 +2,7 @@ use std::io::{Error, ErrorKind, Write};
 
 use crate::{
     core::{
-        cmd::{RedisCmd, RedisCmdType},
+        cmd::{RedisCmdType, RedisCmds},
         resp::{self, RESP_NIL, RESP_OK},
         store::{Obj, Store},
     },
@@ -11,32 +11,38 @@ use crate::{
 
 pub fn eval_and_respond<W: Write>(
     stream: &mut W,
-    cmd: &RedisCmd,
+    cmds: &RedisCmds,
     store: &mut Store,
 ) -> Result<(), Error> {
-    match RedisCmdType::parse(&cmd.cmd) {
-        Some(RedisCmdType::Ping) => eval_ping(stream, &cmd.args),
-        Some(RedisCmdType::Set) => eval_set(stream, &cmd.args, store),
-        Some(RedisCmdType::Get) => eval_get(stream, &cmd.args, store),
-        Some(RedisCmdType::Ttl) => eval_ttl(stream, &cmd.args, store),
-        Some(RedisCmdType::Del) => eval_del(stream, &cmd.args, store),
-        Some(RedisCmdType::Expire) => eval_expire(stream, &cmd.args, store),
-        None => Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!(
-                "ERR unknown command '{}', with args beginning with: {}",
-                cmd.cmd,
-                cmd.args
-                    .iter()
-                    .map(|a| format!("'{a}',"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-        )),
+    let mut buf: Vec<u8> = Vec::new();
+    for cmd in cmds {
+        let encoded_value = match RedisCmdType::parse(&cmd.cmd) {
+            Some(RedisCmdType::Ping) => eval_ping(&cmd.args),
+            Some(RedisCmdType::Set) => eval_set(&cmd.args, store),
+            Some(RedisCmdType::Get) => eval_get(&cmd.args, store),
+            Some(RedisCmdType::Ttl) => eval_ttl(&cmd.args, store),
+            Some(RedisCmdType::Del) => eval_del(&cmd.args, store),
+            Some(RedisCmdType::Expire) => eval_expire(&cmd.args, store),
+            None => Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "ERR unknown command '{}', with args beginning with: {}",
+                    cmd.cmd,
+                    cmd.args
+                        .iter()
+                        .map(|a| format!("'{a}',"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            )),
+        }?;
+
+        buf.extend_from_slice(&encoded_value);
     }
+    stream.write_all(&buf)
 }
 
-fn eval_ping<W: Write>(stream: &mut W, args: &[String]) -> Result<(), Error> {
+fn eval_ping(args: &[String]) -> Result<Vec<u8>, Error> {
     if args.len() > 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -51,10 +57,10 @@ fn eval_ping<W: Write>(stream: &mut W, args: &[String]) -> Result<(), Error> {
     })
     .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-    stream.write_all(&bytes)
+    Ok(bytes)
 }
 
-fn eval_set<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Result<(), Error> {
+fn eval_set(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     if args.len() <= 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -96,10 +102,10 @@ fn eval_set<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
     }
 
     store.put(key, Obj::new(val, duration_ms));
-    stream.write_all(RESP_OK)
+    Ok(RESP_OK.to_vec())
 }
 
-fn eval_get<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Result<(), Error> {
+fn eval_get(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     if args.len() != 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -131,13 +137,13 @@ fn eval_get<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
             let bytes = resp::encode(resp::RespValue::BulkString(v))
                 .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-            stream.write_all(&bytes)
+            Ok(bytes)
         }
-        None => stream.write_all(RESP_NIL),
+        None => Ok(RESP_NIL.to_vec()),
     }
 }
 
-fn eval_ttl<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Result<(), Error> {
+fn eval_ttl(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     if args.len() != 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -160,10 +166,10 @@ fn eval_ttl<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
     let bytes = resp::encode(resp::RespValue::Integer(ttl))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-    stream.write_all(&bytes)
+    Ok(bytes)
 }
 
-fn eval_del<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Result<(), Error> {
+fn eval_del(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     if args.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -181,10 +187,10 @@ fn eval_del<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
     let bytes = resp::encode(resp::RespValue::Integer(total_deleted_count))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-    stream.write_all(&bytes)
+    Ok(bytes)
 }
 
-fn eval_expire<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Result<(), Error> {
+fn eval_expire(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     if args.len() <= 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -197,7 +203,7 @@ fn eval_expire<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> 
         let bytes = resp::encode(resp::RespValue::Integer(0))
             .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-        return stream.write_all(&bytes);
+        return Ok(bytes);
     };
 
     let duration_sec: i64 = args[1].parse().map_err(|_| {
@@ -211,7 +217,7 @@ fn eval_expire<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> 
         let bytes = resp::encode(resp::RespValue::Integer(0))
             .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-        return stream.write_all(&bytes);
+        return Ok(bytes);
     }
 
     obj.expires_at = Some(utils::time::get_current_epoch_time() + ((duration_sec * 1000) as u128));
@@ -219,5 +225,5 @@ fn eval_expire<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> 
     let bytes = resp::encode(resp::RespValue::Integer(1))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-    stream.write_all(&bytes)
+    return Ok(bytes);
 }

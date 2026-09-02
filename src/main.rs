@@ -46,5 +46,7 @@ fn main() {
         }
     };
 
-    let _ = srv.start();
+    if let Err(e) = srv.start() {
+        error!("Server error: {e}");
+    }
 }
