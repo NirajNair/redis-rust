@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::utils;
+use rand::prelude::IteratorRandom;
 
 pub struct Obj {
     pub val: String,
@@ -27,6 +28,10 @@ impl Store {
         }
     }
 
+    pub fn size(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn put(&mut self, key: String, obj: Obj) {
         self.map.insert(key, obj);
     }
@@ -47,5 +52,24 @@ impl Store {
             }
             None => false,
         }
+    }
+
+    pub fn cleanup_expired_samples(&mut self, sample_size: usize) -> usize {
+        let now = utils::time::get_current_epoch_time();
+
+        let keys_to_delete: Vec<String> = self
+            .map
+            .keys()
+            .sample(&mut rand::rng(), sample_size)
+            .into_iter()
+            .filter(|&k| self.map[k].expires_at.is_some_and(|t| t <= now))
+            .cloned()
+            .collect();
+
+        let deleted = keys_to_delete.len();
+        for key in keys_to_delete {
+            self.map.remove(&key);
+        }
+        deleted
     }
 }

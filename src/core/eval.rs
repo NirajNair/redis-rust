@@ -116,7 +116,12 @@ fn eval_get<W: Write>(stream: &mut W, args: &[String], store: &mut Store) -> Res
                 Some(t) => t <= now,
                 None => false,
             };
-            if expired { None } else { Some(obj.val.clone()) }
+            if expired {
+                store.delete(key);
+                None
+            } else {
+                Some(obj.val.clone())
+            }
         }
         None => None,
     };

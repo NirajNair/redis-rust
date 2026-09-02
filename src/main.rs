@@ -3,6 +3,7 @@ use log::error;
 mod async_server;
 mod server;
 mod core {
+    pub mod cleanup;
     pub mod cmd;
     pub mod eval;
     pub mod resp;

@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     io::{Error, ErrorKind, Read, Result, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Instant,
 };
 
 use log::{error, info};
@@ -10,7 +11,12 @@ use mio::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::core::{cmd::RedisCmd, eval, resp, store::Store};
+use crate::core::{
+    cleanup::{self},
+    cmd::RedisCmd,
+    eval, resp,
+    store::Store,
+};
 
 const SERVER: Token = Token(0);
 
@@ -50,12 +56,19 @@ impl AsyncServer {
         info!("Server started at address: {}", self.addr);
 
         let mut events = Events::with_capacity(128);
+        let mut cleanup_config = cleanup::CleanupConfig::new();
 
         self.poller
             .registry()
             .register(&mut self.listener, SERVER, Interest::READABLE)?;
 
         loop {
+            let now = Instant::now();
+            if cleanup_config.last_run_time + cleanup_config.freuqency_sec <= now {
+                cleanup::cleanup_expired_keys(&mut self.store, cleanup_config.sample_size);
+                cleanup_config.last_run_time = now;
+            }
+
             self.poller.poll(&mut events, None)?;
 
             for event in events.iter() {
@@ -98,6 +111,7 @@ impl AsyncServer {
         let Some(client) = self.clients.get_mut(token) else {
             return Err(Error::new(ErrorKind::NotFound, "Client not found"));
         };
+
         match client.stream.read(&mut buffer) {
             Ok(0) => self.remove_client(token),
             Ok(n) => {
