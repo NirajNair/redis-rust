@@ -9,7 +9,7 @@ impl Config {
     pub fn new() -> Self {
         Config {
             port: 7379,
-            max_key_limit: 1,
+            max_key_limit: 100,
         }
     }
 }

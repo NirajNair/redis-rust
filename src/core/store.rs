@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::utils;
+use crate::{config::config, utils};
 use rand::prelude::IteratorRandom;
 
 pub struct Obj {
@@ -33,6 +33,9 @@ impl Store {
     }
 
     pub fn put(&mut self, key: String, obj: Obj) {
+        if self.size() > config().max_key_limit {
+            self.evict_first();
+        }
         self.map.insert(key, obj);
     }
 
@@ -71,5 +74,12 @@ impl Store {
             self.map.remove(&key);
         }
         deleted
+    }
+
+    pub fn evict_first(&mut self) {
+        let first_key = self.map.keys().next().cloned();
+        if let Some(key) = first_key {
+            self.delete(&key);
+        }
     }
 }
