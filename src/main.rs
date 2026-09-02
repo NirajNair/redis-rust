@@ -1,6 +1,9 @@
 use log::error;
 
+use crate::config::config;
+
 mod async_server;
+mod config;
 mod server;
 mod core {
     pub mod cleanup;
@@ -33,12 +36,9 @@ fn main() {
     // srv.start();
 
     // Async implementation
-    let port: u16 = std::env::args()
-        .nth(1)
-        .and_then(|p| p.parse().ok())
-        .unwrap_or_else(|| 7379);
+    config();
 
-    let mut srv = match async_server::AsyncServer::new(port) {
+    let mut srv = match async_server::AsyncServer::new() {
         Ok(server) => server,
         Err(e) => {
             error!("Failed to create server: {}", e);

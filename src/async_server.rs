@@ -11,11 +11,14 @@ use mio::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::core::{
-    cleanup::{self},
-    cmd::RedisCmd,
-    eval, resp,
-    store::Store,
+use crate::{
+    config::config,
+    core::{
+        cleanup::{self},
+        cmd::RedisCmd,
+        eval, resp,
+        store::Store,
+    },
 };
 
 const SERVER: Token = Token(0);
@@ -36,8 +39,8 @@ pub struct Client {
 }
 
 impl AsyncServer {
-    pub fn new(port: u16) -> Result<Self> {
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
+    pub fn new() -> Result<Self> {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config().port);
         let listener = TcpListener::bind(addr)?;
         let poller = Poll::new()?;
 
