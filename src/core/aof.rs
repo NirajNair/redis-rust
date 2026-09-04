@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Error, Write},
+    io::{Error, ErrorKind, Read, Seek, SeekFrom, Write},
     path::Path,
     time::{Duration, Instant},
 };
@@ -10,9 +10,11 @@ use log::info;
 use crate::{
     config::config,
     core::{
+        cmd::{RedisCmd, RedisCmdType},
         resp::{self},
         store::{Obj, Store},
     },
+    utils,
 };
 
 pub struct AofConfig {
@@ -63,6 +65,82 @@ impl Aof {
         };
 
         Aof::new(file)
+    }
+
+    pub fn get_size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    pub fn recreate_store(&mut self, store: &mut Store) -> Result<(), Error> {
+        self.file.seek(SeekFrom::Start(0))?;
+
+        let mut buffer = Vec::new();
+        self.file.read_to_end(&mut buffer)?;
+
+        if buffer.is_empty() {
+            return Err(Error::other("Err AOF file is empty"));
+        }
+
+        let cmds = resp::decode_redis_cmds(&buffer)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, format!("{e:?}")))?;
+
+        for mut cmd in cmds {
+            match RedisCmdType::parse(&cmd.cmd.to_lowercase()) {
+                Some(RedisCmdType::Set) => {
+                    let mut expires_at: Option<u128> = None;
+
+                    if cmd.args.len() > 2 {
+                        let ts: u128 = cmd.args[3]
+                            .parse()
+                            .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
+
+                        if utils::time::get_current_epoch_time() >= ts {
+                            continue;
+                        }
+
+                        expires_at = Some(ts)
+                    }
+
+                    let key = cmd.args.remove(0);
+                    let val = cmd.args.remove(0);
+
+                    store.put(key, Obj { val, expires_at });
+                }
+                Some(RedisCmdType::Del) => {
+                    for key in cmd.args {
+                        store.delete(&key);
+                    }
+                }
+                Some(RedisCmdType::PExpireAt) => {
+                    let key = &cmd.args[0];
+                    let ts: u128 = cmd.args[1]
+                        .parse()
+                        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
+
+                    if utils::time::get_current_epoch_time() >= ts {
+                        store.delete(key);
+                    } else if let Some(obj) = store.get_mut(key) {
+                        obj.expires_at = Some(ts);
+                    }
+                }
+                None | Some(_) => {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "ERR unknown command '{}', with args beginning with: {}",
+                            cmd.cmd,
+                            cmd.args
+                                .iter()
+                                .map(|a| format!("'{a}',"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn flush(&self) -> Result<(), Error> {

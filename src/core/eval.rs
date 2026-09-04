@@ -27,7 +27,7 @@ pub fn eval_and_respond<W: Write>(
             Some(RedisCmdType::Del) => eval_del(cmd, ctx),
             Some(RedisCmdType::Expire) => eval_expire(cmd, ctx),
             Some(RedisCmdType::BgRewriteAOF) => eval_bgrewriteaof(cmd, ctx),
-            None => Err(Error::new(
+            Some(RedisCmdType::PExpireAt) | None => Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
                     "ERR unknown command '{}', with args beginning with: {}",

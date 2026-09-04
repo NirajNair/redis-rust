@@ -1,3 +1,7 @@
+use std::io::{Error, ErrorKind};
+
+use crate::core::cmd::{RedisCmd, RedisCmds};
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum RespValue {
     SimpleString(String),
@@ -49,6 +53,24 @@ pub fn encode_cmd(cmd: Vec<String>) -> Result<Vec<u8>, RespError> {
     }
 
     Ok(buf)
+}
+
+pub fn decode_redis_cmds(data: &[u8]) -> Result<RedisCmds, RespError> {
+    let vec_tokens = decode_array_string(data)?;
+
+    vec_tokens
+        .into_iter()
+        .map(|tokens| {
+            let (cmd, args) = tokens
+                .split_first()
+                .ok_or_else(|| RespError::Parse("empty command".to_string()))?;
+
+            Ok(RedisCmd {
+                cmd: cmd.clone(),
+                args: args.to_vec(),
+            })
+        })
+        .collect()
 }
 
 pub fn decode_array_string(data: &[u8]) -> Result<Vec<Vec<String>>, RespError> {

@@ -16,7 +16,7 @@ use crate::{
     core::{
         aof::{self, Aof},
         cleanup::{self},
-        cmd::{RedisCmd, RedisCmds},
+        cmd::RedisCmds,
         context::{self, Context},
         eval, resp,
         store::Store,
@@ -66,6 +66,10 @@ impl AsyncServer {
         let mut events = Events::with_capacity(128);
         let mut cleanup_config = cleanup::CleanupConfig::new();
         let mut aof_config = aof::AofConfig::new();
+
+        if self.aof.get_size_bytes() > 0 {
+            self.aof.recreate_store(&mut self.store)?
+        }
 
         self.poller
             .registry()
@@ -133,16 +137,8 @@ impl AsyncServer {
         match client.stream.read(&mut buffer) {
             Ok(0) => self.remove_client(token),
             Ok(n) => {
-                let vec_tokens = resp::decode_array_string(&buffer[..n])
+                let cmds = resp::decode_redis_cmds(&buffer[..n])
                     .map_err(|e| Error::new(ErrorKind::InvalidData, format!("{e:?}")))?;
-
-                let cmds = vec_tokens
-                    .into_iter()
-                    .map(|mut tokens| {
-                        let cmd = tokens.remove(0);
-                        RedisCmd { cmd, args: tokens }
-                    })
-                    .collect();
 
                 let mut ctx = context::Context::new(&mut self.store, &mut self.aof);
                 respond(&mut client.stream, &cmds, &mut ctx)
