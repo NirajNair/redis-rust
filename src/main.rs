@@ -9,6 +9,7 @@ mod core {
     pub mod aof;
     pub mod cleanup;
     pub mod cmd;
+    pub mod context;
     pub mod eval;
     pub mod resp;
     pub mod store;

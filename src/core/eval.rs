@@ -4,10 +4,10 @@ use log::error;
 
 use crate::{
     core::{
-        aof::dump_all_aof,
         cmd::{RedisCmdType, RedisCmds},
+        context::Context,
         resp::{self, RESP_NIL, RESP_OK},
-        store::{Obj, Store},
+        store::Obj,
     },
     utils,
 };
@@ -15,18 +15,18 @@ use crate::{
 pub fn eval_and_respond<W: Write>(
     stream: &mut W,
     cmds: &RedisCmds,
-    store: &mut Store,
+    ctx: &mut Context,
 ) -> Result<(), Error> {
     let mut buf: Vec<u8> = Vec::new();
     for cmd in cmds {
         let encoded_value = match RedisCmdType::parse(&cmd.cmd) {
             Some(RedisCmdType::Ping) => eval_ping(&cmd.args),
-            Some(RedisCmdType::Set) => eval_set(&cmd.args, store),
-            Some(RedisCmdType::Get) => eval_get(&cmd.args, store),
-            Some(RedisCmdType::Ttl) => eval_ttl(&cmd.args, store),
-            Some(RedisCmdType::Del) => eval_del(&cmd.args, store),
-            Some(RedisCmdType::Expire) => eval_expire(&cmd.args, store),
-            Some(RedisCmdType::BgRewriteAOF) => eval_bgrewriteaof(&cmd.args, store),
+            Some(RedisCmdType::Set) => eval_set(&cmd.args, ctx),
+            Some(RedisCmdType::Get) => eval_get(&cmd.args, ctx),
+            Some(RedisCmdType::Ttl) => eval_ttl(&cmd.args, ctx),
+            Some(RedisCmdType::Del) => eval_del(&cmd.args, ctx),
+            Some(RedisCmdType::Expire) => eval_expire(&cmd.args, ctx),
+            Some(RedisCmdType::BgRewriteAOF) => eval_bgrewriteaof(&cmd.args, ctx),
             None => Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
@@ -64,7 +64,7 @@ fn eval_ping(args: &[String]) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn eval_set(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
+fn eval_set(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     if args.len() <= 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -72,8 +72,8 @@ fn eval_set(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
         ));
     }
 
-    let key = args[0].clone();
-    let val = args[1].clone();
+    let key = args[0].to_owned();
+    let val = args[1].to_owned();
     let mut duration_ms: Option<u128> = None;
 
     let mut i = 2;
@@ -105,11 +105,24 @@ fn eval_set(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
         i += 1;
     }
 
-    store.put(key, Obj::new(val, duration_ms));
+    let obj = Obj::new(val, duration_ms);
+    let mut cmd_vec = vec!["SET".to_string(), args[0].to_owned(), args[1].to_owned()];
+
+    if let Some(expires_at) = &obj.expires_at {
+        cmd_vec.push("PEXPIREAT".to_string());
+        cmd_vec.push(expires_at.to_string());
+    }
+
+    let encoded_cmd = resp::encode_cmd(cmd_vec)
+        .map_err(|e| Error::other(format!("Err encoding command: {e:?}")))?;
+
+    ctx.aof.append(encoded_cmd)?;
+    ctx.store.put(key, obj);
+
     Ok(RESP_OK.to_vec())
 }
 
-fn eval_get(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
+fn eval_get(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     if args.len() != 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -120,14 +133,14 @@ fn eval_get(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     let key = &args[0];
     let now = utils::time::get_current_epoch_time();
 
-    let val = match store.get(key) {
+    let val = match ctx.store.get(key) {
         Some(obj) => {
             let expired = match obj.expires_at {
                 Some(t) => t <= now,
                 None => false,
             };
             if expired {
-                store.delete(key);
+                ctx.store.delete(key);
                 None
             } else {
                 Some(obj.val.clone())
@@ -147,7 +160,7 @@ fn eval_get(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     }
 }
 
-fn eval_ttl(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
+fn eval_ttl(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     if args.len() != 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -158,7 +171,7 @@ fn eval_ttl(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     let key = &args[0];
     let now = utils::time::get_current_epoch_time();
 
-    let ttl: i64 = match store.get(key) {
+    let ttl: i64 = match ctx.store.get(key) {
         Some(obj) => match obj.expires_at {
             None => -1,
             Some(t) if t <= now => -2,
@@ -173,7 +186,7 @@ fn eval_ttl(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn eval_del(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
+fn eval_del(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     if args.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -181,9 +194,17 @@ fn eval_del(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
         ));
     }
 
+    let mut cmd_vec = Vec::with_capacity(1 + args.len());
+    cmd_vec.push("DEL".to_string());
+    cmd_vec.extend(args.to_vec());
+    let encoded_cmd = resp::encode_cmd(cmd_vec)
+        .map_err(|e| Error::other(format!("Err encoding command: {e:?}")))?;
+
+    ctx.aof.append(encoded_cmd)?;
+
     let mut total_deleted_count = 0;
     for arg in args {
-        if store.delete(arg) {
+        if ctx.store.delete(arg) {
             total_deleted_count += 1;
         }
     }
@@ -194,7 +215,7 @@ fn eval_del(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn eval_expire(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
+fn eval_expire(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     if args.len() <= 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -203,7 +224,7 @@ fn eval_expire(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     }
 
     let key = &args[0];
-    let Some(obj) = store.get_mut(key) else {
+    let Some(obj) = ctx.store.get_mut(key) else {
         let bytes = resp::encode(resp::RespValue::Integer(0))
             .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
@@ -224,7 +245,18 @@ fn eval_expire(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
         return Ok(bytes);
     }
 
-    obj.expires_at = Some(utils::time::get_current_epoch_time() + ((duration_sec * 1000) as u128));
+    let new_expires_at = utils::time::get_current_epoch_time() + ((duration_sec * 1000) as u128);
+
+    let cmd_vec = vec![
+        "PEXPIREAT".to_string(),
+        args[0].to_owned(),
+        new_expires_at.to_string(),
+    ];
+    let encoded_cmd = resp::encode_cmd(cmd_vec)
+        .map_err(|e| Error::other(format!("Err encoding command: {e:?}")))?;
+
+    ctx.aof.append(encoded_cmd)?;
+    obj.expires_at = Some(new_expires_at);
 
     let bytes = resp::encode(resp::RespValue::Integer(1))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
@@ -232,7 +264,7 @@ fn eval_expire(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn eval_bgrewriteaof(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
+fn eval_bgrewriteaof(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     if !args.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -240,7 +272,7 @@ fn eval_bgrewriteaof(args: &[String], store: &mut Store) -> Result<Vec<u8>, Erro
         ));
     }
 
-    if let Err(e) = dump_all_aof(store) {
+    if let Err(e) = ctx.aof.dump_all_aof(ctx.store) {
         error!("AOF rewrite terminated with error: {}", e)
     }
 

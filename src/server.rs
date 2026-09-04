@@ -6,25 +6,31 @@ use std::{
 };
 
 use crate::core::{
+    aof,
     cmd::{RedisCmd, RedisCmds},
+    context::{self, Context},
     eval, resp,
-    store::Store,
+    store::{self, Store},
 };
 
 pub struct Server {
     addr: String,
     conn_count: u32,
     listener: TcpListener,
-    store: Store,
+    store: store::Store,
+    aof: aof::Aof,
 }
 impl Server {
     pub fn new(addr: String) -> std::io::Result<Self> {
         let listener = TcpListener::bind(&addr)?;
+        let aof = aof::Aof::open_or_create()?;
+
         Ok(Server {
             addr,
             conn_count: 0,
             listener,
             store: Store::new(),
+            aof,
         })
     }
 
@@ -42,11 +48,9 @@ impl Server {
                         "Client connected on {}, concurrent clients: {}",
                         peer_addr, self.conn_count,
                     );
-                    loop {
-                        let Ok(Some(redis_cmd)) = self.read_command(&mut stream, &peer_addr) else {
-                            break;
-                        };
-                        if respond(&mut stream, &redis_cmd, &mut self.store).is_err() {
+                    while let Ok(Some(redis_cmd)) = self.read_command(&mut stream, &peer_addr) {
+                        let mut ctx = context::Context::new(&mut self.store, &mut self.aof);
+                        if respond(&mut stream, &redis_cmd, &mut ctx).is_err() {
                             break;
                         }
                     }
@@ -100,8 +104,8 @@ impl Server {
     }
 }
 
-fn respond(stream: &mut TcpStream, cmds: &RedisCmds, store: &mut Store) -> Result<(), Error> {
-    if let Err(e) = eval::eval_and_respond(stream, cmds, store) {
+fn respond(stream: &mut TcpStream, cmds: &RedisCmds, ctx: &mut Context) -> Result<(), Error> {
+    if let Err(e) = eval::eval_and_respond(stream, cmds, ctx) {
         let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
             .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
 

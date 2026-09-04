@@ -14,8 +14,10 @@ use mio::{
 use crate::{
     config::config,
     core::{
+        aof::{self, Aof},
         cleanup::{self},
         cmd::{RedisCmd, RedisCmds},
+        context::{self, Context},
         eval, resp,
         store::Store,
     },
@@ -31,6 +33,7 @@ pub struct AsyncServer {
     listener: TcpListener,
     clients: HashMap<Token, Client>,
     store: Store,
+    aof: Aof,
 }
 
 pub struct Client {
@@ -43,6 +46,7 @@ impl AsyncServer {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config().port);
         let listener = TcpListener::bind(addr)?;
         let poller = Poll::new()?;
+        let aof = Aof::open_or_create()?;
 
         Ok(AsyncServer {
             addr,
@@ -52,6 +56,7 @@ impl AsyncServer {
             poller,
             clients: HashMap::new(),
             store: Store::new(),
+            aof,
         })
     }
 
@@ -60,6 +65,7 @@ impl AsyncServer {
 
         let mut events = Events::with_capacity(128);
         let mut cleanup_config = cleanup::CleanupConfig::new();
+        let mut aof_config = aof::AofConfig::new();
 
         self.poller
             .registry()
@@ -72,6 +78,11 @@ impl AsyncServer {
                 cleanup_config.last_run_time = now;
             }
 
+            if aof_config.last_flush_time + aof_config.flush_freq_sec <= now {
+                self.aof.flush()?;
+                aof_config.last_flush_time = now;
+            }
+
             self.poller.poll(&mut events, None)?;
 
             for event in events.iter() {
@@ -80,10 +91,10 @@ impl AsyncServer {
                         if let Err(e) = self.accept_clients() {
                             error!("Error accepting client: {e}");
                         }
-                    } else if self.clients.contains_key(&event.token()) {
-                        if let Err(e) = self.handle_client(&event.token()) {
-                            error!("Client handler error: {e}");
-                        }
+                    } else if self.clients.contains_key(&event.token())
+                        && let Err(e) = self.handle_client(&event.token())
+                    {
+                        error!("Client handler error: {e}");
                     }
                 }
             }
@@ -133,7 +144,8 @@ impl AsyncServer {
                     })
                     .collect();
 
-                respond(&mut client.stream, &cmds, &mut self.store)
+                let mut ctx = context::Context::new(&mut self.store, &mut self.aof);
+                respond(&mut client.stream, &cmds, &mut ctx)
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => Ok(()),
             Err(e) => {
@@ -164,8 +176,8 @@ impl AsyncServer {
     }
 }
 
-fn respond<W: Write>(stream: &mut W, cmds: &RedisCmds, store: &mut Store) -> Result<()> {
-    if let Err(e) = eval::eval_and_respond(stream, cmds, store) {
+fn respond<W: Write>(stream: &mut W, cmds: &RedisCmds, ctx: &mut Context) -> Result<()> {
+    if let Err(e) = eval::eval_and_respond(stream, cmds, ctx) {
         let bytes = resp::encode(resp::RespValue::Error(e.to_string()))
             .map_err(|err| Error::new(ErrorKind::InvalidInput, format!("{err:?}")))?;
 
