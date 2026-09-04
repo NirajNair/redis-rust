@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Iter};
 
 use crate::{config::config, utils};
 use rand::prelude::IteratorRandom;
@@ -30,6 +30,10 @@ impl Store {
 
     pub fn size(&self) -> usize {
         self.map.len()
+    }
+
+    pub fn iter(&self) -> Iter<'_, String, Obj> {
+        self.map.iter()
     }
 
     pub fn put(&mut self, key: String, obj: Obj) {

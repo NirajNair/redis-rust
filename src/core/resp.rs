@@ -40,6 +40,17 @@ fn encode_one(data: RespValue) -> Result<Vec<u8>, RespError> {
     }
 }
 
+pub fn encode_cmd(cmd: Vec<String>) -> Result<Vec<u8>, RespError> {
+    let mut buf: Vec<u8> = Vec::new();
+
+    buf.extend_from_slice(&format!("*{}\r\n", cmd.len()).into_bytes());
+    for v in cmd {
+        buf.extend_from_slice(&encode_one(RespValue::BulkString(v))?);
+    }
+
+    Ok(buf)
+}
+
 pub fn decode_array_string(data: &[u8]) -> Result<Vec<Vec<String>>, RespError> {
     decode(data)?
         .into_iter()

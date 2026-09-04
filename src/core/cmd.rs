@@ -12,6 +12,7 @@ pub enum RedisCmdType {
     Ttl,
     Del,
     Expire,
+    BgRewriteAOF,
 }
 
 impl RedisCmdType {
@@ -23,6 +24,7 @@ impl RedisCmdType {
             "ttl" => Some(RedisCmdType::Ttl),
             "del" => Some(RedisCmdType::Del),
             "expire" => Some(RedisCmdType::Expire),
+            "bgrewriteaof" => Some(RedisCmdType::BgRewriteAOF),
             _ => None,
         }
     }

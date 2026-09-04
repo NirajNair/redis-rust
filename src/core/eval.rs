@@ -1,7 +1,10 @@
 use std::io::{Error, ErrorKind, Write};
 
+use log::error;
+
 use crate::{
     core::{
+        aof::dump_all_aof,
         cmd::{RedisCmdType, RedisCmds},
         resp::{self, RESP_NIL, RESP_OK},
         store::{Obj, Store},
@@ -23,6 +26,7 @@ pub fn eval_and_respond<W: Write>(
             Some(RedisCmdType::Ttl) => eval_ttl(&cmd.args, store),
             Some(RedisCmdType::Del) => eval_del(&cmd.args, store),
             Some(RedisCmdType::Expire) => eval_expire(&cmd.args, store),
+            Some(RedisCmdType::BgRewriteAOF) => eval_bgrewriteaof(&cmd.args, store),
             None => Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
@@ -225,5 +229,20 @@ fn eval_expire(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
     let bytes = resp::encode(resp::RespValue::Integer(1))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
-    return Ok(bytes);
+    Ok(bytes)
+}
+
+fn eval_bgrewriteaof(args: &[String], store: &mut Store) -> Result<Vec<u8>, Error> {
+    if !args.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "ERR wrong number of arguments for 'bgrewriteaof' command",
+        ));
+    }
+
+    if let Err(e) = dump_all_aof(store) {
+        error!("AOF rewrite terminated with error: {}", e)
+    }
+
+    Ok(RESP_OK.to_vec())
 }

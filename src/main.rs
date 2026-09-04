@@ -6,6 +6,7 @@ mod async_server;
 mod config;
 mod server;
 mod core {
+    pub mod aof;
     pub mod cleanup;
     pub mod cmd;
     pub mod eval;
