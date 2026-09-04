@@ -4,7 +4,7 @@ use log::error;
 
 use crate::{
     core::{
-        cmd::{RedisCmdType, RedisCmds},
+        cmd::{RedisCmd, RedisCmdType, RedisCmds},
         context::Context,
         resp::{self, RESP_NIL, RESP_OK},
         store::Obj,
@@ -20,13 +20,13 @@ pub fn eval_and_respond<W: Write>(
     let mut buf: Vec<u8> = Vec::new();
     for cmd in cmds {
         let encoded_value = match RedisCmdType::parse(&cmd.cmd) {
-            Some(RedisCmdType::Ping) => eval_ping(&cmd.args),
-            Some(RedisCmdType::Set) => eval_set(&cmd.args, ctx),
-            Some(RedisCmdType::Get) => eval_get(&cmd.args, ctx),
-            Some(RedisCmdType::Ttl) => eval_ttl(&cmd.args, ctx),
-            Some(RedisCmdType::Del) => eval_del(&cmd.args, ctx),
-            Some(RedisCmdType::Expire) => eval_expire(&cmd.args, ctx),
-            Some(RedisCmdType::BgRewriteAOF) => eval_bgrewriteaof(&cmd.args, ctx),
+            Some(RedisCmdType::Ping) => eval_ping(cmd),
+            Some(RedisCmdType::Set) => eval_set(cmd, ctx),
+            Some(RedisCmdType::Get) => eval_get(cmd, ctx),
+            Some(RedisCmdType::Ttl) => eval_ttl(cmd, ctx),
+            Some(RedisCmdType::Del) => eval_del(cmd, ctx),
+            Some(RedisCmdType::Expire) => eval_expire(cmd, ctx),
+            Some(RedisCmdType::BgRewriteAOF) => eval_bgrewriteaof(cmd, ctx),
             None => Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
@@ -46,46 +46,46 @@ pub fn eval_and_respond<W: Write>(
     stream.write_all(&buf)
 }
 
-fn eval_ping(args: &[String]) -> Result<Vec<u8>, Error> {
-    if args.len() > 1 {
+fn eval_ping(cmd: &RedisCmd) -> Result<Vec<u8>, Error> {
+    if cmd.args.len() > 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "ERR wrong number of arguments for 'ping' command",
         ));
     }
 
-    let bytes = (if args.is_empty() {
+    let bytes = (if cmd.args.is_empty() {
         resp::encode(resp::RespValue::SimpleString("PONG".to_string()))
     } else {
-        resp::encode(resp::RespValue::BulkString(args[0].clone()))
+        resp::encode(resp::RespValue::BulkString(cmd.args[0].clone()))
     })
     .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
 
     Ok(bytes)
 }
 
-fn eval_set(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
-    if args.len() <= 1 {
+fn eval_set(cmd: &RedisCmd, ctx: &mut Context) -> Result<Vec<u8>, Error> {
+    if cmd.args.len() <= 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "ERR wrong number of arguments for 'set' command",
         ));
     }
 
-    let key = args[0].to_owned();
-    let val = args[1].to_owned();
+    let key = cmd.args[0].to_owned();
+    let val = cmd.args[1].to_owned();
     let mut duration_ms: Option<u128> = None;
 
     let mut i = 2;
-    while i < args.len() {
-        match args[i].to_lowercase().as_str() {
+    while i < cmd.args.len() {
+        match cmd.args[i].to_lowercase().as_str() {
             "ex" => {
                 i += 1;
-                if i >= args.len() {
+                if i >= cmd.args.len() {
                     return Err(Error::new(ErrorKind::InvalidInput, "ERR syntax error"));
                 }
 
-                let duration_sec: i64 = args[i].parse().map_err(|_| {
+                let duration_sec: i64 = cmd.args[i].parse().map_err(|_| {
                     Error::new(
                         ErrorKind::InvalidInput,
                         "ERR value is not an integer or out of range",
@@ -106,7 +106,11 @@ fn eval_set(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     }
 
     let obj = Obj::new(val, duration_ms);
-    let mut cmd_vec = vec!["SET".to_string(), args[0].to_owned(), args[1].to_owned()];
+    let mut cmd_vec = vec![
+        cmd.cmd.to_owned(),
+        cmd.args[0].to_owned(),
+        cmd.args[1].to_owned(),
+    ];
 
     if let Some(expires_at) = &obj.expires_at {
         cmd_vec.push("PEXPIREAT".to_string());
@@ -122,15 +126,15 @@ fn eval_set(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     Ok(RESP_OK.to_vec())
 }
 
-fn eval_get(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
-    if args.len() != 1 {
+fn eval_get(cmd: &RedisCmd, ctx: &mut Context) -> Result<Vec<u8>, Error> {
+    if cmd.args.len() != 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "ERR wrong number of arguments for 'get' command",
         ));
     }
 
-    let key = &args[0];
+    let key = &cmd.args[0];
     let now = utils::time::get_current_epoch_time();
 
     let val = match ctx.store.get(key) {
@@ -160,15 +164,15 @@ fn eval_get(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     }
 }
 
-fn eval_ttl(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
-    if args.len() != 1 {
+fn eval_ttl(cmd: &RedisCmd, ctx: &mut Context) -> Result<Vec<u8>, Error> {
+    if cmd.args.len() != 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "ERR wrong number of arguments for 'ttl' command",
         ));
     }
 
-    let key = &args[0];
+    let key = &cmd.args[0];
     let now = utils::time::get_current_epoch_time();
 
     let ttl: i64 = match ctx.store.get(key) {
@@ -186,24 +190,24 @@ fn eval_ttl(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn eval_del(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
-    if args.is_empty() {
+fn eval_del(cmd: &RedisCmd, ctx: &mut Context) -> Result<Vec<u8>, Error> {
+    if cmd.args.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "ERR wrong number of arguments for 'del' command",
         ));
     }
 
-    let mut cmd_vec = Vec::with_capacity(1 + args.len());
-    cmd_vec.push("DEL".to_string());
-    cmd_vec.extend(args.to_vec());
+    let mut cmd_vec = Vec::with_capacity(1 + cmd.args.len());
+    cmd_vec.push(cmd.cmd.to_owned());
+    cmd_vec.extend(cmd.args.to_vec());
     let encoded_cmd = resp::encode_cmd(cmd_vec)
         .map_err(|e| Error::other(format!("Err encoding command: {e:?}")))?;
 
     ctx.aof.append(encoded_cmd)?;
 
     let mut total_deleted_count = 0;
-    for arg in args {
+    for arg in &cmd.args {
         if ctx.store.delete(arg) {
             total_deleted_count += 1;
         }
@@ -215,15 +219,15 @@ fn eval_del(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn eval_expire(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
-    if args.len() <= 1 {
+fn eval_expire(cmd: &RedisCmd, ctx: &mut Context) -> Result<Vec<u8>, Error> {
+    if cmd.args.len() <= 1 {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "ERR wrong number of arguments for 'expire' command",
         ));
     }
 
-    let key = &args[0];
+    let key = &cmd.args[0];
     let Some(obj) = ctx.store.get_mut(key) else {
         let bytes = resp::encode(resp::RespValue::Integer(0))
             .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("{e:?}")))?;
@@ -231,7 +235,7 @@ fn eval_expire(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
         return Ok(bytes);
     };
 
-    let duration_sec: i64 = args[1].parse().map_err(|_| {
+    let duration_sec: i64 = cmd.args[1].parse().map_err(|_| {
         Error::new(
             ErrorKind::InvalidInput,
             "ERR value is not an integer or out of range",
@@ -249,7 +253,7 @@ fn eval_expire(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
 
     let cmd_vec = vec![
         "PEXPIREAT".to_string(),
-        args[0].to_owned(),
+        cmd.args[0].to_owned(),
         new_expires_at.to_string(),
     ];
     let encoded_cmd = resp::encode_cmd(cmd_vec)
@@ -264,8 +268,8 @@ fn eval_expire(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn eval_bgrewriteaof(args: &[String], ctx: &mut Context) -> Result<Vec<u8>, Error> {
-    if !args.is_empty() {
+fn eval_bgrewriteaof(cmd: &RedisCmd, ctx: &mut Context) -> Result<Vec<u8>, Error> {
+    if !cmd.args.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "ERR wrong number of arguments for 'bgrewriteaof' command",
